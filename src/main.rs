@@ -3,6 +3,10 @@ use serde::{Deserialize, Serialize};
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    if !cfg!(target_os = "windows") {
+        panic!("supported only windows")
+    }
+
     let conf = read_app_config();
 
     HttpServer::new(|| App::new().service(greet))
@@ -11,10 +15,21 @@ async fn main() -> std::io::Result<()> {
         .await
 }
 
-#[get("/")]
+#[tracing::instrument]
+#[get("/api/users")]
 async fn greet() -> impl Responder {
+    #[derive(Debug, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct UserAndClient {
+        users: Vec<SessionUser>,
+        client_name: String,
+    }
+
     let users = query_user();
-    web::Json(users)
+    let client_name = option_env!("CLIENTNAME")
+        .unwrap_or("client name undefined")
+        .to_string();
+    web::Json(UserAndClient { users, client_name })
 }
 
 /// Windowsのログインユーザー情報一覧を取得
@@ -22,16 +37,12 @@ fn query_user() -> Vec<SessionUser> {
     use regex::Regex;
     use std::process::Command;
 
-    if !cfg!(target_os = "windows") {
-        panic!("supported only windows")
-    }
-
     let out = Command::new("cmd")
         .args(vec!["/c", "chcp 65001 && query user"])
         .output()
         .expect("command error");
     let text = String::from_utf8(out.stdout).expect("not utf8 string");
-    println!("{}", text);
+    dbg!(&text);
 
     let lf_text = text.replace("\r", "");
     // convert two more white space to tab
