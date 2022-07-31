@@ -11,4 +11,6 @@ regex = "1.6.0"
 serde = { version = "1.0.140", features = ["derive"] }
 serde_json = "1.0.82"
 tracing = "0.1.36"
+tracing-appender = "0.2.2"
+tracing-subscriber = "0.3.15"
 windows = { version = "0.39.0", features = ["Win32_System_RemoteDesktop", "Win32_Foundation"] }

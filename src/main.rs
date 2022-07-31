@@ -2,6 +2,9 @@ use std::error::Error;
 
 use actix_web::{get, web, App, HttpServer, Responder};
 use serde::{Deserialize, Serialize};
+use tracing::{error, info};
+use tracing_appender::non_blocking::WorkerGuard;
+use tracing_subscriber::fmt::writer::MakeWriterExt;
 use windows::Win32::System::RemoteDesktop;
 use windows::{core::PWSTR, Win32::Foundation::HANDLE};
 
@@ -10,19 +13,33 @@ async fn main() -> std::io::Result<()> {
     if !cfg!(target_os = "windows") {
         panic!("supported only windows")
     }
-
     let conf = read_app_config();
+    let _wg = init_logs(&conf);
+
+    info!("Application init.");
+    info!("{:?}", &conf);
+
     HttpServer::new(|| App::new().service(api_users))
         .bind((conf.listen_address, conf.listen_port))?
         .run()
         .await
 }
 
+fn init_logs(conf: &AppConfig) -> Vec<WorkerGuard> {
+    let file_appender = tracing_appender::rolling::daily(&conf.log_dir, "app.log");
+    let (nb_stdout, gd_stdout) = tracing_appender::non_blocking(std::io::stdout());
+    let (nb_file, gd_file) = tracing_appender::non_blocking(file_appender);
+
+    let all_files = nb_file.and(nb_stdout);
+    tracing_subscriber::fmt().with_writer(all_files).init();
+    return vec![gd_stdout, gd_file];
+}
+
 const WTS_CURRENT_SERVER_HANDLE: HANDLE = HANDLE(0);
 #[allow(dead_code)]
 const WTS_CURRENT_USER_SESSION_ID: u32 = 1;
 
-#[tracing::instrument]
+#[tracing::instrument(level = "info")]
 #[get("/api/users")]
 async fn api_users() -> impl Responder {
     #[derive(Debug, Serialize)]
@@ -32,7 +49,11 @@ async fn api_users() -> impl Responder {
         client_name: String,
     }
 
-    let users = query_user().unwrap_or(vec![]);
+    info!("query users");
+    let users = query_user().unwrap_or_else(|e| {
+        error!(" query user error{:?}", e);
+        vec![]
+    });
     let user_clients: Vec<_> = users
         .into_iter()
         .map(|user| {
@@ -118,7 +139,8 @@ fn read_app_config() -> AppConfig {
         listen_port: option_env!("LISTEN_PORT")
             .unwrap_or("8080")
             .parse::<u16>()
-            .unwrap_or(8080),
+            .expect("LISTEN_PORT cannot parse port number"),
+        log_dir: option_env!("LOG_DIR").unwrap_or("./log").to_string(),
     }
 }
 
@@ -139,4 +161,5 @@ struct SessionUser {
 struct AppConfig {
     listen_port: u16,
     listen_address: String,
+    log_dir: String,
 }
