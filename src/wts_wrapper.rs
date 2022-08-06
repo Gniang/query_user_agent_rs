@@ -4,9 +4,9 @@ use windows::Win32::System::RemoteDesktop;
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WtsSessionInfoW {
-    session_id: u32,
-    state: i32,
-    win_station_name: String,
+    pub session_id: u32,
+    pub state: i32,
+    pub win_station_name: String,
 }
 
 impl From<&RemoteDesktop::WTS_SESSION_INFOW> for WtsSessionInfoW {

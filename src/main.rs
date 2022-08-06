@@ -23,14 +23,33 @@ async fn main() -> std::io::Result<()> {
 
     info!("Application init.");
     info!("{:?}", &conf);
-    if (&conf).observable_interval > 0 {
-        let c = conf.clone();
-        actix_web::rt::spawn(observe_session_status(c));
+
+    // test
+    {
+        loop {
+            let a = query_sessions();
+            for b in &a {
+                let client_name = get_wts_session_info(b.session_id, RemoteDesktop::WTSClientName);
+                println!("{:?}", client_name)
+            }
+        }
     }
-    HttpServer::new(|| App::new().service(api_users).service(api_sessions))
-        .bind((conf.listen_address, conf.listen_port))?
-        .run()
-        .await
+
+    // interval check
+    {
+        if (&conf).observable_interval > 0 {
+            let c = conf.clone();
+            actix_web::rt::spawn(observe_session_status(c));
+        }
+    }
+
+    // rest api
+    {
+        HttpServer::new(|| App::new().service(api_users).service(api_sessions))
+            .bind((conf.listen_address, conf.listen_port))?
+            .run()
+            .await
+    }
 }
 
 fn init_logs(conf: &AppConfig) -> Vec<WorkerGuard> {
@@ -118,21 +137,23 @@ fn get_wts_session_info(session_id: u32, info_type: RemoteDesktop::WTS_INFO_CLAS
     #[allow(dead_code)]
     const WTS_CURRENT_USER_SESSION_ID: u32 = 1;
 
-    let mut result_byte_size: u32 = 0;
-    let mut result_buffer: [u16; 8192] = [0; 8192];
     let result_txt = unsafe {
-        let mut result_pwstr = PWSTR(result_buffer.as_mut_ptr());
+        let mut len: u32 = 0;
+        let pwstr = std::ptr::null_mut();
         RemoteDesktop::WTSQuerySessionInformationW(
             WTS_CURRENT_SERVER_HANDLE,
             session_id,
             info_type,
-            &mut result_pwstr,
-            &mut result_byte_size,
+            pwstr,
+            &mut len,
         );
-        if result_byte_size == 0 {
-            return "".to_string();
-        }
-        result_pwstr.to_string().unwrap_or("".to_string())
+        let result = if len == 0 {
+            "".to_string()
+        } else {
+            (*pwstr).to_string().unwrap_or("".to_string())
+        };
+        RemoteDesktop::WTSFreeMemory(pwstr as _);
+        result
         // String::from_utf16_lossy(std::slice::from_raw_parts(
         //     result_pwstr.0,
         //     // u8 -> u16 and last cstr \0 remove

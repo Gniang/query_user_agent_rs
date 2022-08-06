@@ -19,8 +19,6 @@ impl<T: Serialize> Serialize for WtsArray<T> {
     }
 }
 
-
-
 impl<T> WtsArray<T> {
     pub unsafe fn from_raw(data: *mut T, len: u32) -> Self {
         Self { data, len }
