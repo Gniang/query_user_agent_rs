@@ -1,6 +1,7 @@
 pub mod wts_array;
 pub mod wts_wrapper;
 
+use std::env;
 use std::error::Error;
 
 use actix_web::{get, web, App, HttpServer, Responder};
@@ -8,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
+use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::RemoteDesktop;
-use windows::{core::PWSTR, Win32::Foundation::HANDLE};
 use wts_array::WtsArray;
 use wts_wrapper::WtsSessionInfoW;
 
@@ -24,16 +25,16 @@ async fn main() -> std::io::Result<()> {
     info!("Application init.");
     info!("{:?}", &conf);
 
-    // test
-    {
-        loop {
-            let a = query_sessions();
-            for b in &a {
-                let client_name = get_wts_session_info(b.session_id, RemoteDesktop::WTSClientName);
-                println!("{:?}", client_name)
-            }
-        }
-    }
+    // // test
+    // {
+    //     loop {
+    //         let a = query_sessions();
+    //         for b in &a {
+    //             let client_name = get_wts_session_info(b.session_id, RemoteDesktop::WTSClientName);
+    //             println!("{:?}", client_name)
+    //         }
+    //     }
+    // }
 
     // interval check
     {
@@ -154,11 +155,6 @@ fn get_wts_session_info(session_id: u32, info_type: RemoteDesktop::WTS_INFO_CLAS
         };
         RemoteDesktop::WTSFreeMemory(pwstr as _);
         result
-        // String::from_utf16_lossy(std::slice::from_raw_parts(
-        //     result_pwstr.0,
-        //     // u8 -> u16 and last cstr \0 remove
-        //     (result_byte_size / 2 - 1) as usize,
-        // ))
     };
     result_txt
 }
@@ -232,16 +228,18 @@ fn query_user() -> Result<Vec<SessionUser>, Box<dyn Error>> {
 /// 環境変数からアプリ設定を読込
 fn read_app_config() -> AppConfig {
     AppConfig {
-        listen_address: option_env!("LISTEN_ADDRESS")
-            .unwrap_or("127.0.0.1")
+        listen_address: env::var("LISTEN_ADDRESS")
+            .unwrap_or("127.0.0.1".to_string())
             .to_string(),
-        listen_port: option_env!("LISTEN_PORT")
-            .unwrap_or("8080")
+        listen_port: env::var("LISTEN_PORT")
+            .unwrap_or("8080".to_string())
             .parse::<_>()
             .expect("LISTEN_PORT cannot parse port number"),
-        log_dir: option_env!("LOG_DIR").unwrap_or("./log").to_string(),
-        observable_interval: option_env!("OBSERVABLE_INTERVAL")
-            .unwrap_or("0")
+        log_dir: env::var("LOG_DIR")
+            .unwrap_or("./log".to_string())
+            .to_string(),
+        observable_interval: env::var("OBSERVABLE_INTERVAL")
+            .unwrap_or("0".to_string())
             .parse::<_>()
             .expect("OBSERVABLE_INTERVAL cannot parse interval seconds."),
     }
