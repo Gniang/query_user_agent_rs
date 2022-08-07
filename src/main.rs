@@ -1,25 +1,33 @@
-pub mod wts_array;
-pub mod wts_wrapper;
+mod app_config;
+mod app_data;
+mod wts_array;
+mod wts_wrapper;
 
+use std::collections::HashMap;
 use std::env;
 use std::error::Error;
 
-use actix_web::{get, web, App, HttpServer, Responder};
-use serde::{Deserialize, Serialize};
+use actix_web::{cookie::time::Duration, get, web, App, HttpServer, Responder};
+use app_config::AppConfig;
+use app_data::{LoginEvent, ServerSessionAll, SessionInfoWithClient, SessionUser};
+use itertools::Itertools;
 use tracing::{debug, error, info};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
+use windows::core::PWSTR;
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::RemoteDesktop;
 use wts_array::WtsArray;
 use wts_wrapper::WtsSessionInfoW;
+
+use crate::app_data::{LoginTrigger, UserClient};
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     if !cfg!(target_os = "windows") {
         panic!("supported only windows")
     }
-    let conf = read_app_config();
+    let conf = AppConfig::read_env();
     let _wg = init_logs(&conf);
 
     info!("Application init.");
@@ -38,8 +46,9 @@ async fn main() -> std::io::Result<()> {
 
     // interval check
     {
-        if (&conf).observable_interval > 0 {
+        if (&conf).observable_interval > Duration::ZERO {
             let c = conf.clone();
+            info!("observe start. interval:{:?}", &c.observable_interval);
             actix_web::rt::spawn(observe_session_status(c));
         }
     }
@@ -68,41 +77,155 @@ fn init_logs(conf: &AppConfig) -> Vec<WorkerGuard> {
 
 async fn observe_session_status(conf: AppConfig) {
     use actix_web::rt::time;
-
-    struct UserDiff {
-        client_name: String,
-        user_name: String,
-        is_status_changed: bool,
-    }
-
-    let mut interval = time::interval(std::time::Duration::from_secs(conf.observable_interval));
-    let mut last_sutatus = None;
+    let client = awc::Client::default();
+    let url = conf.slack_webhook_url;
+    let mut interval = time::interval(conf.observable_interval);
+    let mut last_clients = None;
     loop {
-        interval.tick().await;
-        info!("query users interval");
-        let users = query_user().unwrap_or_else(|e| {
-            error!(" query user error{:?}", e);
-            vec![]
-        });
-        let mut user_clients: Vec<_> = users
+        debug!("observe session status checking...");
+
+        let all = get_server_session_all();
+        let clients: Vec<_> = all
+            .sessions
             .into_iter()
-            .map(|user| {
-                let client_name = get_wts_session_info(user.id, RemoteDesktop::WTSClientName);
-                UserClient {
-                    user: user,
-                    client_name: client_name,
-                }
+            .filter(|s| s.client_name != "")
+            .map(|s| UserClient {
+                client_name: s.client_name.to_string(),
+                server_user: s.server_user_name.to_string(),
             })
+            .sorted()
             .collect();
 
-        if last_sutatus.is_none() {
-            last_sutatus =
-                Some(user_clients.sort_by(|a, b| a.user.user_name.cmp(&b.user.user_name)));
-            continue;
+        if let Some(last_clients) = last_clients {
+            let login_events = create_login_events(&last_clients, &clients);
+            if !login_events.is_empty() {
+                info!(
+                    "login evented. server:{} events:{:?}",
+                    &all.server_name, login_events
+                );
+                let json = create_webhook_msg(&login_events, &all.server_name);
+                let res = client.post(&url).send_body(json.to_string()).await;
+                if res.is_err() {
+                    error!("{:?}", res);
+                }
+            } else {
+                debug!("no login events.");
+            }
         }
-
-        // last_sutatus.sort()
+        last_clients = Some(clients);
+        debug!("observe session status check ended.");
+        interval.tick().await;
     }
+}
+
+fn create_webhook_msg(login_events: &Vec<LoginEvent>, server_name: &str) -> serde_json::Value {
+    let events_msg = login_events
+        .iter()
+        .map(|x| {
+            let event = match x.trigger {
+                LoginTrigger::Login => "Logined",
+                LoginTrigger::Logout => "Logouted",
+            };
+            format!(
+                "- **{}**  client:`{}` server_user:`{}`",
+                event, x.client_name, x.server_user_name
+            )
+        })
+        .join("\n");
+
+    let text = format!(
+        r#"
+            server: {}
+            
+            {}
+        "#,
+        server_name, &events_msg,
+    );
+    serde_json::json!({ "text": text })
+
+    // slack msg format reference
+    //
+    // {
+    //     "text": "main text",
+    //     "blocks": [
+    //         {
+    //             "type": "section",
+    //             "text": {
+    //                 "type": "mrkdwn",
+    //                 "text": "Danny Torrence left the following review for your property:"
+    //             }
+    //         },
+    //         {
+    //             "type": "section",
+    //             "block_id": "section567",
+    //             "text": {
+    //                 "type": "mrkdwn",
+    //                 "text": "<https://example.com|Overlook Hotel> \n :star: \n Doors had too many axe holes, guest in room 237 was far too rowdy, whole place felt stuck in the 1920s."
+    //             },
+    //             "accessory": {
+    //                 "type": "image",
+    //                 "image_url": "https://is5-ssl.mzstatic.com/image/thumb/Purple3/v4/d3/72/5c/d3725c8f-c642-5d69-1904-aa36e4297885/source/256x256bb.jpg",
+    //                 "alt_text": "Haunted hotel image"
+    //             }
+    //         },
+    //         {
+    //             "type": "section",
+    //             "block_id": "section789",
+    //             "fields": [
+    //                 {
+    //                     "type": "mrkdwn",
+    //                     "text": "*Average Rating*\n1.0"
+    //                 }
+    //             ]
+    //         }
+    //     ]
+    // }
+}
+
+///
+fn create_login_events(old: &Vec<UserClient>, new: &Vec<UserClient>) -> Vec<LoginEvent> {
+    debug!("old: {:?}", old);
+    debug!("new: {:?}", new);
+    if old == new {
+        return vec![];
+    }
+
+    let old_g = old.iter().into_group_map_by(|&x| x);
+    let new_g = new.iter().into_group_map_by(|&x| x);
+    //
+    let logouted = detect_chnged_core(&old_g, &new_g);
+    let logined = detect_chnged_core(&new_g, &old_g);
+
+    let login_events = logined.into_iter().map(|x| LoginEvent {
+        trigger: LoginTrigger::Login,
+        client_name: x.client_name.to_string(),
+        server_user_name: x.server_user.to_string(),
+    });
+
+    let logout_events = logouted.into_iter().map(|x| LoginEvent {
+        trigger: LoginTrigger::Logout,
+        client_name: x.client_name.to_string(),
+        server_user_name: x.server_user.to_string(),
+    });
+
+    login_events.chain(logout_events).collect()
+}
+
+fn detect_chnged_core<'a>(
+    base: &'a HashMap<&UserClient, Vec<&UserClient>>,
+    other: &HashMap<&UserClient, Vec<&UserClient>>,
+) -> Vec<&'a UserClient> {
+    base.iter()
+        .filter(|&(&key, items)| {
+            let same_other = other.get(key);
+            let is_state_changed = match same_other {
+                Some(other_items) => other_items.len() == items.len(),
+                _ => true,
+            };
+            is_state_changed
+        })
+        .map(|(&key, _)| key)
+        .collect()
 }
 
 #[tracing::instrument(level = "info")]
@@ -117,7 +240,10 @@ async fn api_users() -> impl Responder {
         .into_iter()
         .map(|user| {
             let client_name = get_wts_session_info(user.id, RemoteDesktop::WTSClientName);
-            UserClient { user, client_name }
+            UserClient {
+                server_user: user.user_name,
+                client_name,
+            }
         })
         .collect();
 
@@ -128,8 +254,29 @@ async fn api_users() -> impl Responder {
 #[get("/api/sessions")]
 async fn api_sessions() -> impl Responder {
     info!("session info web api");
+    let server_session_all = get_server_session_all();
+    web::Json(server_session_all)
+}
+
+fn get_server_session_all() -> ServerSessionAll {
     let sessions = query_sessions();
-    web::Json(sessions)
+    let session_with_clients: Vec<_> = sessions
+        .into_iter()
+        .map(|s| {
+            let client = get_wts_session_info(s.session_id, RemoteDesktop::WTSClientName);
+            let user_name = get_wts_session_info(s.session_id, RemoteDesktop::WTSUserName);
+            SessionInfoWithClient {
+                server_user_name: user_name,
+                client_name: client,
+                session: s,
+            }
+        })
+        .collect();
+    let server_name = env::var("COMPUTERNAME").unwrap_or("".to_string());
+    ServerSessionAll {
+        sessions: session_with_clients,
+        server_name: server_name,
+    }
 }
 
 const WTS_CURRENT_SERVER_HANDLE: HANDLE = HANDLE(0);
@@ -140,20 +287,26 @@ fn get_wts_session_info(session_id: u32, info_type: RemoteDesktop::WTS_INFO_CLAS
 
     let result_txt = unsafe {
         let mut len: u32 = 0;
-        let pwstr = std::ptr::null_mut();
+        let mut bytes = [0u16; 1024];
+        // let pwstr = std::ptr::null_mut();
+        let mut pwstr = PWSTR(bytes.as_mut_ptr());
         RemoteDesktop::WTSQuerySessionInformationW(
             WTS_CURRENT_SERVER_HANDLE,
             session_id,
             info_type,
-            pwstr,
+            &mut pwstr,
             &mut len,
         );
         let result = if len == 0 {
             "".to_string()
         } else {
-            (*pwstr).to_string().unwrap_or("".to_string())
+            String::from_utf16_lossy(std::slice::from_raw_parts(
+                pwstr.0,
+                // u8 -> u16 and last cstr \0 remove
+                (len / 2 - 1) as usize,
+            ))
         };
-        RemoteDesktop::WTSFreeMemory(pwstr as _);
+        RemoteDesktop::WTSFreeMemory(pwstr.as_ptr() as _);
         result
     };
     result_txt
@@ -223,52 +376,4 @@ fn query_user() -> Result<Vec<SessionUser>, Box<dyn Error>> {
         .collect();
 
     Ok(users)
-}
-
-/// 環境変数からアプリ設定を読込
-fn read_app_config() -> AppConfig {
-    AppConfig {
-        listen_address: env::var("LISTEN_ADDRESS")
-            .unwrap_or("127.0.0.1".to_string())
-            .to_string(),
-        listen_port: env::var("LISTEN_PORT")
-            .unwrap_or("8080".to_string())
-            .parse::<_>()
-            .expect("LISTEN_PORT cannot parse port number"),
-        log_dir: env::var("LOG_DIR")
-            .unwrap_or("./log".to_string())
-            .to_string(),
-        observable_interval: env::var("OBSERVABLE_INTERVAL")
-            .unwrap_or("0".to_string())
-            .parse::<_>()
-            .expect("OBSERVABLE_INTERVAL cannot parse interval seconds."),
-    }
-}
-
-/// Windowsのログインユーザー情報
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-struct SessionUser {
-    user_name: String,
-    session_name: String,
-    id: u32,
-    state: String,
-    idle_time: String,
-    login_time: String,
-}
-
-#[derive(Debug, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-struct UserClient {
-    user: SessionUser,
-    client_name: String,
-}
-
-/// アプリ設定
-#[derive(Debug, Clone)]
-struct AppConfig {
-    listen_port: u16,
-    listen_address: String,
-    log_dir: String,
-    observable_interval: u64,
 }
