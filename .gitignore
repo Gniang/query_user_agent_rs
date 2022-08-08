@@ -6,3 +6,4 @@ query_user_agent_rs.exe
 log
 
 .env
+!doc/.env
