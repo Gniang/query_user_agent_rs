@@ -63,14 +63,26 @@ async fn main() -> std::io::Result<()> {
 }
 
 fn init_logs(conf: &AppConfig) -> Vec<WorkerGuard> {
+    let log_level = match conf.log_level.to_lowercase().as_str()
+    {
+        "trace" => tracing::Level::TRACE,
+        "debug" => tracing::Level::DEBUG,
+        "info" => tracing::Level::INFO,
+        "warn" => tracing::Level::WARN,
+        "error" => tracing::Level::ERROR,
+        _ => tracing::Level::INFO,
+    };
+    
     let file_appender = tracing_appender::rolling::daily(&conf.log_dir, "app.log");
     let (nb_stdout, gd_stdout) = tracing_appender::non_blocking(std::io::stdout());
     let (nb_file, gd_file) = tracing_appender::non_blocking(file_appender);
 
+
+
     let all_files = nb_file.and(nb_stdout);
     tracing_subscriber::fmt()
         .with_writer(all_files)
-        .with_max_level(tracing::Level::DEBUG)
+        .with_max_level(log_level)
         .init();
     return vec![gd_stdout, gd_file];
 }
@@ -78,7 +90,7 @@ fn init_logs(conf: &AppConfig) -> Vec<WorkerGuard> {
 async fn observe_session_status(conf: AppConfig) {
     use actix_web::rt::time;
     let client = awc::Client::default();
-    let url = conf.slack_webhook_url;
+    let url = conf.chat_webhook_url;
     let mut interval = time::interval(conf.observable_interval);
     let mut last_clients = None;
     loop {
@@ -96,15 +108,18 @@ async fn observe_session_status(conf: AppConfig) {
             .sorted()
             .collect();
 
+        // リモートのログイン状態が前回から変わっていたらWebhookとしてチャットに通知する
+        // ログインコンピューター名とログインユーザーの組み合わせを確認する
         if let Some(last_clients) = last_clients {
-            let login_events = create_login_events(&last_clients, &clients);
+            let login_events = detect_login_events(&last_clients, &clients);
             if !login_events.is_empty() {
                 info!(
                     "login evented. server:{} events:{:?}",
                     &all.server_name, login_events
                 );
-                let json = create_webhook_msg(&login_events, &all.server_name);
-                let res = client.post(&url).send_body(json.to_string()).await;
+                let json = create_webhook_msg(&login_events, &conf.server_name, &conf.chat_webhook_channel).to_string();
+                debug!("sending webhook url:{} json:{}", &url, &json);
+                let res = client.post(&url).send_body(json).await;
                 if res.is_err() {
                     error!("{:?}", res);
                 }
@@ -118,30 +133,28 @@ async fn observe_session_status(conf: AppConfig) {
     }
 }
 
-fn create_webhook_msg(login_events: &Vec<LoginEvent>, server_name: &str) -> serde_json::Value {
+fn create_webhook_msg(login_events: &Vec<LoginEvent>, server_name: &str, channel_name:&str) -> serde_json::Value {
     let events_msg = login_events
         .iter()
         .map(|x| {
             let event = match x.trigger {
-                LoginTrigger::Login => "Logined",
-                LoginTrigger::Logout => "Logouted",
+                LoginTrigger::Login => "📢LOGIN",
+                LoginTrigger::Logout => "💤LOGOUT",
             };
             format!(
-                "- **{}**  client:`{}` server_user:`{}`",
+                "- `{}`  client:`{}` server_user:`{}`",
                 event, x.client_name, x.server_user_name
             )
         })
         .join("\n");
 
-    let text = format!(
-        r#"
-            server: {}
-            
-            {}
-        "#,
+    let text = format!("server:`{}`\n{}",
         server_name, &events_msg,
     );
-    serde_json::json!({ "text": text })
+    serde_json::json!({
+            "channel": channel_name,
+            "text": text 
+        })
 
     // slack msg format reference
     //
@@ -183,7 +196,7 @@ fn create_webhook_msg(login_events: &Vec<LoginEvent>, server_name: &str) -> serd
 }
 
 ///
-fn create_login_events(old: &Vec<UserClient>, new: &Vec<UserClient>) -> Vec<LoginEvent> {
+fn detect_login_events(old: &Vec<UserClient>, new: &Vec<UserClient>) -> Vec<LoginEvent> {
     debug!("old: {:?}", old);
     debug!("new: {:?}", new);
     if old == new {

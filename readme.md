@@ -15,44 +15,18 @@ Windowsのリモート接続しているクライアント端末情報を返す�
 
 1. releaseから`query_user_agent.zip`をダウンロードする
   * 適当なフォルダに解凍する
-  * 起動バッチ(`./query_user_agent_rs.cmd`)で設定を編集する 
-    * リッスンアドレスとポートを指定する 
-    * `0.0.0.0` = どこからでもアクセス可
 2. タスクスケジューラに起動バッチを登録する
 
 ### リモートクライアントの確認
 
-http://localhost:9284/api/users
+http://localhost:9284/api/sessions
 
 （`localhost:9284`は設定や接続元に応じて適切に読み替えてください）
 
-上記にURLアクセスすることで、サインイン中のユーザーごとのステータスを取得できます。
+上記にURLアクセスすることで、ログインセッションごとのステータスを取得できます。
 
-サンプルレスポンス
-
-```jsonc
-[
-    // ユーザーごと
-    {
-        // query user の結果相当
-        "user": {
-            "userName": "test user",
-            // console: ローカル利用状態, RDP...: リモート接続状態 
-            "sessionName": "console",
-            // セッションID
-            "id": 1,
-            // active: 利用中、 listen:
-            "state": "Active",
-            // 最後に操作してからの時間
-            "idleTime": "58",
-            "loginTime": "2022/07/25 22:50"
-        },
-        // 上記セッションIDのクライアント接続名。
-        // リモート接続のときのみ値が設定される。
-        "clientName": ""
-    }
-]
-```
+また`CHAT_WEBHOOK_URL`と`OBSERVABLE_INTERVAL`を設定していると、
+指定のSlack互換チャットにログイン/ログアウトを通知可能
 
 ## 開発用
 
@@ -61,13 +35,13 @@ http://localhost:9284/api/users
 
 OpenSSLのパッケージが必要
 
-```sh
+```powershell
 # 適当なディレクトリを作成し、そこに移動する
 cd "c:\dev"
 # vspkg（C++用パッケージ管理ツール)をインストール(別途実施済であれば不要)
 git clone https://github.com/Microsoft/vcpkg 
 cd vcpkg
-./bootstrap-vcpkg.bat
+.\bootstrap-vcpkg.bat
 # === システムの詳細設定から`c:\dev\vcpkg`をPATHに追加する ===
 # === ターミナル再起動 ===
 
@@ -115,6 +89,12 @@ Compress-Archive -Path `
     '.\target\release\query_user_agent_rs.exe', '.\query_user_agent_rs.cmd' `
     -DestinationPath '.\query_user_agent.zip'
 ```
+
+### 環境変数
+
+実行場所と同じ位置の.envファイルもしくは環境変数で設定を上書き可能
+
+詳細は`./doc/.env`を参照
 
 ## その他
 
