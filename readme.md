@@ -52,6 +52,9 @@ vcpkg integrate install
 
 # === システムの詳細設定から環境変数を設定する ===
 # * `VCPKGRS_DYNAMIC`を追加し、`1`を設定する
+# * `RUSTFLAGS`を追加し、`-Ctarget-feature=+crt-static`を設定する
+#   * OpenSSLを静的リンクするよう設定する
+#   * 動的リンクだとインストール先PCにopenSSLのDLLが必要になる
 
 # ルート証明書の設定
 # 配置先ディレクトリを用意する
@@ -61,7 +64,6 @@ cd "c:\openssl"
 
 # === システムの詳細設定から環境変数を設定する ===
 # * `SSL_CERT_FILE`を追加し、`c:\openssl\cacert.pem`(上記ファイル）を設定する
-
 # === ターミナル再起動 ===
 ```
 
